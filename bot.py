@@ -68,14 +68,40 @@ keep_alive()
 
 # ================= RANK CHECK FUNCTION =================
 def check_rank(total_flights, total_minutes):
-    if total_flights >= 60 and total_minutes >= 1000:
-        return "Elite Captain", None
-    elif total_flights >= 35 and total_minutes >= 500:
-        return "Captain", "Elite Captain"
-    elif total_flights >= 15 and total_minutes >= 150:
-        return "Elite Co-Pilot", "Captain"
-    else:
-        return "Co-Pilot", "Elite Co-Pilot"
+    """
+    Returns (current_rank, next_rank, promotion_message)
+    promotion_message is None unless user is eligible soon
+    """
+    # Define thresholds
+    ranks = [
+        {"name": "Co-Pilot", "flights": 0, "minutes": 0},
+        {"name": "Elite Co-Pilot", "flights": 15, "minutes": 150},
+        {"name": "Captain", "flights": 35, "minutes": 500},
+        {"name": "Elite Captain", "flights": 60, "minutes": 1000},
+    ]
+
+    current_rank = "Co-Pilot"
+    next_rank = None
+    promotion_message = None
+
+    for i, rank in enumerate(ranks):
+        if total_flights >= rank["flights"] and total_minutes >= rank["minutes"]:
+            current_rank = rank["name"]
+            if i < len(ranks) - 1:
+                next_rank = ranks[i + 1]["name"]
+                # Check if user is close to next rank (>=80% of requirement)
+                flights_req = ranks[i + 1]["flights"]
+                minutes_req = ranks[i + 1]["minutes"]
+                if total_flights >= flights_req * 0.8 and total_minutes >= minutes_req * 0.8:
+                    promotion_message = f"🪜 You are almost eligible for {next_rank}! Prepare for the rank test."
+            else:
+                next_rank = None
+        else:
+            if i == 0:
+                next_rank = ranks[i + 1]["name"]
+            break
+
+    return current_rank, next_rank, promotion_message
 
 # ================= READY EVENT =================
 @bot.event
@@ -133,7 +159,7 @@ async def logflight(
     total_flights, total_minutes = cursor.fetchone()
     total_minutes = total_minutes or 0
 
-    current_rank, next_rank = check_rank(total_flights, total_minutes)
+    current_rank, next_rank, promotion_message = check_rank(total_flights, total_minutes)
 
     # Update pilot rank in pilots table
     cursor.execute("SELECT rank FROM pilots WHERE pilot_id=?", (interaction.user.id,))
@@ -172,22 +198,11 @@ async def logflight(
     embed.add_field(name="Current Rank", value=current_rank, inline=True)
 
     if next_rank:
-        embed.add_field(
-            name="Next Rank",
-            value=next_rank,
-            inline=True
-        )
-        embed.add_field(
-            name="Promotion Status",
-            value=f"🪜 You are eligible for {next_rank} soon! Prepare for the rank test.",
-            inline=False
-        )
+        embed.add_field(name="Next Rank", value=next_rank, inline=True)
+    if promotion_message:
+        embed.add_field(name="Promotion Status", value=promotion_message, inline=False)
     else:
-        embed.add_field(
-            name="Promotion Status",
-            value="⭐ You are at the highest rank!",
-            inline=False
-        )
+        embed.add_field(name="Promotion Status", value="Keep flying! Reach the next rank by completing more flights.", inline=False)
 
     embed.set_footer(text=f"Logged on {timestamp}")
     await interaction.response.send_message(embed=embed)
@@ -202,12 +217,7 @@ async def mystats(interaction: discord.Interaction):
     total_flights, total_minutes = cursor.fetchone()
     total_minutes = total_minutes or 0
 
-    # Get current rank
-    cursor.execute("SELECT rank FROM pilots WHERE pilot_id=?", (interaction.user.id,))
-    result = cursor.fetchone()
-    current_rank = result[0] if result else "Co-Pilot"
-
-    current_rank, next_rank = check_rank(total_flights, total_minutes)
+    current_rank, next_rank, promotion_message = check_rank(total_flights, total_minutes)
 
     embed = discord.Embed(
         title="👨‍✈️ Pilot Statistics",
@@ -219,22 +229,11 @@ async def mystats(interaction: discord.Interaction):
     embed.add_field(name="Current Rank", value=current_rank)
 
     if next_rank:
-        embed.add_field(
-            name="Next Rank",
-            value=next_rank,
-            inline=True
-        )
-        embed.add_field(
-            name="Promotion Status",
-            value=f"🪜 You are eligible for {next_rank} soon! Prepare for the rank test.",
-            inline=False
-        )
+        embed.add_field(name="Next Rank", value=next_rank, inline=True)
+    if promotion_message:
+        embed.add_field(name="Promotion Status", value=promotion_message, inline=False)
     else:
-        embed.add_field(
-            name="Promotion Status",
-            value="⭐ You are at the highest rank!",
-            inline=False
-        )
+        embed.add_field(name="Promotion Status", value="Keep flying! Reach the next rank by completing more flights.", inline=False)
 
     await interaction.response.send_message(embed=embed)
 
@@ -262,6 +261,35 @@ async def lastflight(interaction: discord.Interaction):
     embed.add_field(name="Route", value=f"{dep} → {arr}")
     embed.add_field(name="Flight Time", value=f"{time} mins")
     embed.set_footer(text=f"Logged on {ts}")
+
+    await interaction.response.send_message(embed=embed)
+
+# ================= RANK CHECK COMMAND =================
+@bot.tree.command(name="rankcheck", description="Check your current rank and promotion eligibility")
+async def rankcheck(interaction: discord.Interaction):
+    cursor.execute(
+        "SELECT COUNT(*), SUM(flight_time) FROM flights WHERE pilot_id=?",
+        (interaction.user.id,)
+    )
+    total_flights, total_minutes = cursor.fetchone()
+    total_minutes = total_minutes or 0
+
+    current_rank, next_rank, promotion_message = check_rank(total_flights, total_minutes)
+
+    embed = discord.Embed(
+        title="🪜 Pilot Rank Check",
+        color=0x3498db
+    )
+    embed.add_field(name="Current Rank", value=current_rank)
+    embed.add_field(name="Total Flights", value=total_flights)
+    embed.add_field(name="Total Flight Minutes", value=f"{total_minutes} mins")
+
+    if next_rank:
+        embed.add_field(name="Next Rank", value=next_rank, inline=True)
+    if promotion_message:
+        embed.add_field(name="Promotion Status", value=promotion_message, inline=False)
+    else:
+        embed.add_field(name="Promotion Status", value="Keep flying! Reach the next rank by completing more flights.", inline=False)
 
     await interaction.response.send_message(embed=embed)
 
