@@ -104,10 +104,14 @@ def check_rank(total_flights, total_minutes):
     return current_rank, next_rank, promotion_message
 
 # ================= READY EVENT =================
+GUILD_ID = 1448573647663927399  # replace with your server ID
+
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
-    print(f"✅ Logged in as {bot.user}")
+    guild = discord.Object(id=GUILD_ID)
+    await bot.tree.sync(guild=guild)
+    print(f"✅ Commands synced for test server {GUILD_ID}")
+
 
 # ================= LOG FLIGHT =================
 @bot.tree.command(name="logflight", description="Log a Qatar Airways PTFS flight")
