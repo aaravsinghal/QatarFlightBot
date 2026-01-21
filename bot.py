@@ -1,4 +1,3 @@
-# bot.py
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -9,7 +8,7 @@ from flask import Flask
 from threading import Thread
 
 # ================= ENV TOKEN =================
-TOKEN = os.environ['TOKEN']  # safe, do not hardcode
+TOKEN = os.environ['TOKEN']  # Safe, do not hardcode
 
 # ================= BOT SETUP =================
 intents = discord.Intents.default()
@@ -18,6 +17,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ================= DATABASE =================
 db = sqlite3.connect("flights.db")
 cursor = db.cursor()
+
+# Flights table
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS flights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,10 +39,20 @@ CREATE TABLE IF NOT EXISTS flights (
     timestamp TEXT
 )
 """)
+
+# Pilots table to track ranks
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS pilots (
+    pilot_id INTEGER PRIMARY KEY,
+    rank TEXT DEFAULT 'Co-Pilot',
+    last_promotion TEXT
+)
+""")
 db.commit()
 
 # ================= KEEP-ALIVE SERVER =================
 app = Flask('')
+
 @app.route('/')
 def home():
     return "Bot is running!"
@@ -54,6 +65,17 @@ def keep_alive():
     t.start()
 
 keep_alive()
+
+# ================= RANK CHECK FUNCTION =================
+def check_rank(total_flights, total_minutes):
+    if total_flights >= 60 and total_minutes >= 1000:
+        return "Elite Captain", None
+    elif total_flights >= 35 and total_minutes >= 500:
+        return "Captain", "Elite Captain"
+    elif total_flights >= 15 and total_minutes >= 150:
+        return "Elite Co-Pilot", "Captain"
+    else:
+        return "Co-Pilot", "Elite Co-Pilot"
 
 # ================= READY EVENT =================
 @bot.event
@@ -81,6 +103,7 @@ async def logflight(
     pic = interaction.user.mention
     timestamp = datetime.utcnow().strftime("%d %b %Y | %H:%M UTC")
 
+    # Insert flight
     cursor.execute("""
     INSERT INTO flights VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
@@ -102,6 +125,34 @@ async def logflight(
     ))
     db.commit()
 
+    # Update pilot rank if needed
+    cursor.execute(
+        "SELECT COUNT(*), SUM(flight_time) FROM flights WHERE pilot_id=?",
+        (interaction.user.id,)
+    )
+    total_flights, total_minutes = cursor.fetchone()
+    total_minutes = total_minutes or 0
+
+    current_rank, next_rank = check_rank(total_flights, total_minutes)
+
+    # Update pilot rank in pilots table
+    cursor.execute("SELECT rank FROM pilots WHERE pilot_id=?", (interaction.user.id,))
+    existing = cursor.fetchone()
+    if existing:
+        previous_rank = existing[0]
+        if previous_rank != current_rank:
+            cursor.execute(
+                "UPDATE pilots SET rank=?, last_promotion=? WHERE pilot_id=?",
+                (current_rank, timestamp, interaction.user.id)
+            )
+    else:
+        cursor.execute(
+            "INSERT INTO pilots (pilot_id, rank, last_promotion) VALUES (?,?,?)",
+            (interaction.user.id, current_rank, timestamp)
+        )
+    db.commit()
+
+    # Embed message
     embed = discord.Embed(
         title="✈️ Flight Logged Successfully",
         color=0x6a0dad
@@ -118,8 +169,27 @@ async def logflight(
     embed.add_field(name="ATC", value=atc, inline=False)
     embed.add_field(name="Status", value=status, inline=True)
     embed.add_field(name="Remarks", value=remarks, inline=True)
-    embed.set_footer(text=f"Logged on {timestamp}")
+    embed.add_field(name="Current Rank", value=current_rank, inline=True)
 
+    if next_rank:
+        embed.add_field(
+            name="Next Rank",
+            value=next_rank,
+            inline=True
+        )
+        embed.add_field(
+            name="Promotion Status",
+            value=f"🪜 You are eligible for {next_rank} soon! Prepare for the rank test.",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="Promotion Status",
+            value="⭐ You are at the highest rank!",
+            inline=False
+        )
+
+    embed.set_footer(text=f"Logged on {timestamp}")
     await interaction.response.send_message(embed=embed)
 
 # ================= PILOT STATS =================
@@ -129,16 +199,42 @@ async def mystats(interaction: discord.Interaction):
         "SELECT COUNT(*), SUM(flight_time) FROM flights WHERE pilot_id=?",
         (interaction.user.id,)
     )
-    flights, time = cursor.fetchone()
-    time = time or 0
+    total_flights, total_minutes = cursor.fetchone()
+    total_minutes = total_minutes or 0
+
+    # Get current rank
+    cursor.execute("SELECT rank FROM pilots WHERE pilot_id=?", (interaction.user.id,))
+    result = cursor.fetchone()
+    current_rank = result[0] if result else "Co-Pilot"
+
+    current_rank, next_rank = check_rank(total_flights, total_minutes)
 
     embed = discord.Embed(
         title="👨‍✈️ Pilot Statistics",
         color=0x1abc9c
     )
     embed.add_field(name="Pilot", value=interaction.user.mention)
-    embed.add_field(name="Total Flights", value=flights)
-    embed.add_field(name="Total Flight Time", value=f"{time} mins")
+    embed.add_field(name="Total Flights", value=total_flights)
+    embed.add_field(name="Total Flight Time", value=f"{total_minutes} mins")
+    embed.add_field(name="Current Rank", value=current_rank)
+
+    if next_rank:
+        embed.add_field(
+            name="Next Rank",
+            value=next_rank,
+            inline=True
+        )
+        embed.add_field(
+            name="Promotion Status",
+            value=f"🪜 You are eligible for {next_rank} soon! Prepare for the rank test.",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="Promotion Status",
+            value="⭐ You are at the highest rank!",
+            inline=False
+        )
 
     await interaction.response.send_message(embed=embed)
 
